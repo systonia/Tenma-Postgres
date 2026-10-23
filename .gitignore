@@ -1,0 +1,7 @@
+/plugin/target/
+/vendor/
+composer.lock
+.phpunit.cache/
+.phpunit.result.cache
+/lib/
+/postgres/

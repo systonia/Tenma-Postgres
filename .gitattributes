@@ -1,0 +1,12 @@
+* text=auto
+
+# Left out of Composer installs; src/, bin/, README, llms.txt and licenses ship.
+# The native plugin and Postgres come from GitHub releases (bin/tenma-postgres install).
+/plugin                export-ignore
+/tests                 export-ignore
+/.github               export-ignore
+/phpunit.xml           export-ignore
+/phpstan.neon          export-ignore
+/cliff.toml            export-ignore
+/.gitattributes        export-ignore
+/.gitignore            export-ignore

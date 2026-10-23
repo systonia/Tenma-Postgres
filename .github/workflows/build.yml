@@ -1,0 +1,75 @@
+# Tests on every pushed branch, and on a tag v* a release with the plugin for each platform and its checksums.
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  php:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+      - run: composer install --no-progress
+      - run: vendor/bin/phpunit
+      - run: vendor/bin/phpstan analyse --no-progress
+
+  plugin:
+    strategy:
+      # One platform failing must not cancel the others
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+            file: libtenma_postgres.dylib
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            file: libtenma_postgres.so
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            file: libtenma_postgres.so
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: plugin
+    steps:
+      - uses: actions/checkout@v4
+      # A release must carry the version its tag names, or the install script fetches a plugin that calls itself older
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: grep -qx "version = \"${GITHUB_REF_NAME#v}\"" Cargo.toml
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            plugin/target
+          key: plugin-${{ matrix.platform }}-${{ hashFiles('plugin/Cargo.lock') }}
+      - run: cargo build --release --locked
+      - run: |
+          extension=${{ matrix.file }}
+          cp target/release/${{ matrix.file }} ../tenma-postgres-${{ matrix.platform }}.${extension##*.}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tenma-postgres-${{ matrix.platform }}
+          path: tenma-postgres-${{ matrix.platform }}.*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [php, plugin]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: sha256sum tenma-postgres-* > SHA256SUMS
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes tenma-postgres-* SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

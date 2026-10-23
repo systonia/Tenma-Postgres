@@ -1,0 +1,199 @@
+#!/usr/bin/env php
+<?php
+
+// vendor/bin/tenma-postgres install: downloads the plugin of this package's version and the Postgres binaries
+// for this machine, checks their SHA-256, keeps only what the server needs and adds the plugin to the project's
+// tenma.json, so `tenma index.php` loads it.
+
+const RELEASES = 'https://github.com/systonia/Tenma-Postgres/releases/download';
+const POSTGRES = '18.6.1';
+const POSTGRES_RELEASES = 'https://github.com/theseus-rs/postgresql-binaries/releases/download';
+
+/** Left out of lib/: the JIT, the Python language, client libraries and files only extensions build against. */
+const UNNEEDED = '/LLVM|llvmjit|python|ecpg|pgtypes|sqlite3|\.a$/i';
+
+if (($argv[1] ?? '') !== 'install') {
+    fwrite(STDERR, "Usage: tenma-postgres install\n");
+    exit(2);
+}
+
+foreach ([$_composer_autoload_path ?? null, __DIR__ . '/../vendor/autoload.php'] as $autoload) {
+    if (is_string($autoload) && is_file($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+[$platform, $target] = match ([PHP_OS_FAMILY, php_uname('m')]) {
+    ['Darwin', 'arm64'] => ['macos-arm64.dylib', 'aarch64-apple-darwin'],
+    ['Linux', 'x86_64'] => ['linux-x64.so', 'x86_64-unknown-linux-gnu'],
+    ['Linux', 'aarch64'], ['Linux', 'arm64'] => ['linux-arm64.so', 'aarch64-unknown-linux-gnu'],
+    default => fail('No build for ' . PHP_OS_FAMILY . ' ' . php_uname('m')),
+};
+$package = dirname(__DIR__);
+
+installPostgres($package . '/postgres', $target);
+
+$version = ltrim(Composer\InstalledVersions::getPrettyVersion('tenma/postgres') ?? '', 'v');
+$plugin = $package . '/lib/libtenma_postgres.' . pathinfo($platform, PATHINFO_EXTENSION);
+if (preg_match('/^\d+\.\d+\.\d+$/', $version)) {
+    installPlugin($plugin, "tenma-postgres-$platform", $version);
+} elseif (!is_file($plugin)) {
+    fail("tenma/postgres $version is no release. Build the plugin: cd plugin && cargo build --release, "
+        . "then copy target/release/libtenma_postgres.* to $plugin");
+}
+
+register(getcwd() . '/tenma.json', $plugin);
+
+function installPlugin(string $target, string $asset, string $version): void
+{
+    echo "Downloading $asset $version\n";
+    $plugin = download(RELEASES . "/v$version/$asset");
+
+    // The checksums come from the same release: they catch a broken download, not a forged release
+    $sums = download(RELEASES . "/v$version/SHA256SUMS");
+    if (!preg_match('/^([0-9a-f]{64})\s+' . preg_quote($asset, '/') . '$/m', $sums, $match)) {
+        fail("SHA256SUMS of $version does not list $asset");
+    }
+    if (!hash_equals($match[1], hash('sha256', $plugin))) {
+        fail("$asset does not match its SHA-256; nothing was installed");
+    }
+
+    // Next to the package, so a `composer update` to another version drops the old plugin with it
+    @mkdir(dirname($target));
+    file_put_contents($target, $plugin) !== false || fail("Cannot write $target");
+    echo "Installed $target\n";
+}
+
+/** The server, initdb and pg_ctl with the libraries and shared files they load; about 70 MB instead of 300. */
+function installPostgres(string $target, string $platform): void
+{
+    if (is_file("$target/VERSION") && trim((string) file_get_contents("$target/VERSION")) === POSTGRES) {
+        echo 'Postgres ' . POSTGRES . " is installed in $target\n";
+        return;
+    }
+
+    $name = 'postgresql-' . POSTGRES . "-$platform";
+    $work = sys_get_temp_dir() . '/tenma-postgres-' . bin2hex(random_bytes(4));
+    mkdir($work);
+    $archive = "$work/$name.tar.gz";
+
+    echo "Downloading $name\n";
+    file_put_contents($archive, download(POSTGRES_RELEASES . '/' . POSTGRES . "/$name.tar.gz"));
+    $sum = download(POSTGRES_RELEASES . '/' . POSTGRES . "/$name.tar.gz.sha256");
+    if (!hash_equals(substr(trim($sum), 0, 64), hash_file('sha256', $archive) ?: '')) {
+        remove($work);
+        fail("$name.tar.gz does not match its SHA-256; nothing was installed");
+    }
+
+    exec('tar -xzf ' . escapeshellarg($archive) . ' -C ' . escapeshellarg($work), result_code: $status);
+    $status === 0 || fail("Cannot unpack $archive");
+    $source = "$work/$name";
+
+    remove($target);
+    mkdir("$target/bin", recursive: true);
+    mkdir("$target/lib");
+    foreach (['postgres', 'initdb', 'pg_ctl'] as $program) {
+        copyFile("$source/bin/$program", "$target/bin/$program");
+    }
+    foreach (scandir("$source/lib") ?: [] as $file) {
+        if (is_file("$source/lib/$file") && !preg_match(UNNEEDED, $file)) {
+            copyFile("$source/lib/$file", "$target/lib/$file");
+        }
+    }
+    copyTree("$source/share", "$target/share");
+    remove("$target/share/doc");
+    copyFile("$source/LICENSE", "$target/LICENSE");
+    copyTree("$source/dependency-notices", "$target/dependency-notices");
+    file_put_contents("$target/VERSION", POSTGRES . "\n");
+
+    remove($work);
+    echo 'Installed Postgres ' . POSTGRES . " in $target\n";
+}
+
+function download(string $url): string
+{
+    $context = stream_context_create(['http' => ['user_agent' => 'tenma-postgres-installer', 'ignore_errors' => true]]);
+    $body = @file_get_contents($url, false, $context);
+
+    // The headers of every redirect come first: the last status line is the answer's
+    $status = 0;
+    foreach (http_get_last_response_headers() ?? [] as $header) {
+        if (preg_match('/^HTTP\/\S+ (\d{3})/', $header, $match)) {
+            $status = (int) $match[1];
+        }
+    }
+    if ($body === false || $status !== 200) {
+        fail("Download failed ($status): $url");
+    }
+
+    return $body;
+}
+
+/** Copies a file or a symlink as it is, with its permissions. */
+function copyFile(string $from, string $to): void
+{
+    if (is_link($from)) {
+        symlink((string) readlink($from), $to) || fail("Cannot write $to");
+        return;
+    }
+    copy($from, $to) || fail("Cannot write $to");
+    chmod($to, fileperms($from) & 0777);
+}
+
+function copyTree(string $from, string $to): void
+{
+    mkdir($to, recursive: true);
+    foreach (scandir($from) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+        is_dir("$from/$entry") && !is_link("$from/$entry")
+            ? copyTree("$from/$entry", "$to/$entry")
+            : copyFile("$from/$entry", "$to/$entry");
+    }
+}
+
+function remove(string $path): void
+{
+    if (is_link($path) || is_file($path)) {
+        unlink($path);
+        return;
+    }
+    if (!is_dir($path)) {
+        return;
+    }
+    foreach (scandir($path) ?: [] as $entry) {
+        if ($entry !== '.' && $entry !== '..') {
+            remove("$path/$entry");
+        }
+    }
+    rmdir($path);
+}
+
+/** Adds the plugin to tenma.json's plugins, with a path from the file's directory as tenma reads it. */
+function register(string $config, string $plugin): void
+{
+    $settings = is_file($config) ? json_decode((string) file_get_contents($config), true) : [];
+    if (!is_array($settings)) {
+        fail("$config is no JSON object");
+    }
+
+    $plugin = (string) realpath($plugin);
+    $directory = realpath(dirname($config)) . '/';
+    $path = str_starts_with($plugin, $directory) ? './' . substr($plugin, strlen($directory)) : $plugin;
+    $plugins = is_array($settings['plugins'] ?? null) ? $settings['plugins'] : [];
+    if (in_array($path, $plugins, true)) {
+        return;
+    }
+    $settings['plugins'] = [...$plugins, $path];
+
+    file_put_contents($config, json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+    echo "Added $path to $config\n";
+}
+
+function fail(string $message): never
+{
+    fwrite(STDERR, "$message\n");
+    exit(1);
+}

@@ -1,0 +1,9 @@
+includes:
+    - vendor/tenma/stubs/extension.neon
+
+parameters:
+    level: 10
+    paths:
+        - src
+        - tests
+        - bin/tenma-postgres
