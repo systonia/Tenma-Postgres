@@ -5,7 +5,7 @@
 // for this machine, checks their SHA-256, keeps only what the server needs and adds the plugin to the project's
 // tenma.json, so `tenma index.php` loads it.
 
-const RELEASES = 'https://github.com/systonia/Tenma-Postgres/releases/download';
+const RELEASES = 'https://github.com/tenma-runtime/postgres/releases/download';
 const POSTGRES = '18.6.1';
 const POSTGRES_RELEASES = 'https://github.com/theseus-rs/postgresql-binaries/releases/download';
 

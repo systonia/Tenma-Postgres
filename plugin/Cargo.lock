@@ -95,7 +95,7 @@ dependencies = [
 [[package]]
 name = "tenma-plugin"
 version = "0.1.0"
-source = "git+https://github.com/systonia/Tenma#9720d115e09449831e99d999d3b4dd4eda2d9e36"
+source = "git+https://github.com/tenma-runtime/tenma#9720d115e09449831e99d999d3b4dd4eda2d9e36"
 
 [[package]]
 name = "tenma_postgres"

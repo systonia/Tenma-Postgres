@@ -7,7 +7,7 @@ edition = "2024"
 libc = "0.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-tenma-plugin = { git = "https://github.com/systonia/Tenma", version = "0.1.0" }
+tenma-plugin = { git = "https://github.com/tenma-runtime/tenma", version = "0.1.0" }
 
 [lib]
 crate-type = ["cdylib"]
