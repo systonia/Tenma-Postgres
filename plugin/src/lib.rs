@@ -6,9 +6,9 @@
 //! be deeper than that.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -143,10 +143,20 @@ fn start(input: &[u8]) -> Result<String, String> {
 fn create(binaries: &Path, data: &Path) -> Result<(), String> {
     api().log(LOG_INFO, &format!("postgres: creating {}", data.display()));
     let password = random_password()?;
-    // initdb wants the password in a file; it lies in the temp directory only while initdb runs
-    let file = std::env::temp_dir().join(format!("tenma-postgres-{}", std::process::id()));
-    fs::write(&file, &password).map_err(|error| error.to_string())?;
-    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).map_err(|error| error.to_string())?;
+    // initdb wants the password in a file, and the data directory must be empty for it, so the file
+    // lies next to it while initdb runs. A file left by a crash goes first; create_new refuses a
+    // file or symlink that is there anyway, and mode keeps the file private from the start
+    let mut file = data.as_os_str().to_owned();
+    file.push(".initdb-password");
+    let file = PathBuf::from(file);
+    let _ = fs::remove_file(&file);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&file)
+        .and_then(|mut handle| handle.write_all(password.as_bytes()))
+        .map_err(|error| format!("postgres: {}: {error}", file.display()))?;
 
     let result = run(Command::new(binaries.join("bin/initdb"))
         .arg("--pgdata")
