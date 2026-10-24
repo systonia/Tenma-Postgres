@@ -99,7 +99,7 @@ source = "git+https://github.com/tenma-runtime/tenma#9720d115e09449831e99d999d3b
 
 [[package]]
 name = "tenma_postgres"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "serde",
