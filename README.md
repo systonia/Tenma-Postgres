@@ -47,7 +47,8 @@ Platforms: macOS arm64, Linux x64 and arm64.
 ## Develop
 
 ```bash
-cd plugin && cargo build --release && mkdir -p ../lib && cp target/release/libtenma_postgres.* ../lib/
+cd plugin && cargo build --release && mkdir -p ../lib
+cp target/release/libtenma_postgres.dylib ../lib/tenma_postgres.plugin   # .so on Linux
 cd .. && bin/tenma-postgres install
 composer test
 ```

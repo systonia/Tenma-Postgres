@@ -87,6 +87,7 @@ final class ServerTest extends TestCase
 
     private static function plugin(): ?string
     {
-        return glob(dirname(__DIR__) . '/lib/libtenma_postgres.*')[0] ?? null;
+        $plugin = dirname(__DIR__) . '/lib/tenma_postgres.plugin';
+        return is_file($plugin) ? $plugin : null;
     }
 }

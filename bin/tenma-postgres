@@ -35,12 +35,13 @@ $package = dirname(__DIR__);
 installPostgres($package . '/postgres', $target);
 
 $version = ltrim(Composer\InstalledVersions::getPrettyVersion('tenma/postgres') ?? '', 'v');
-$plugin = $package . '/lib/libtenma_postgres.' . pathinfo($platform, PATHINFO_EXTENSION);
+// One name on every platform, so a tenma.json committed on one machine loads on another: dlopen ignores the extension
+$plugin = $package . '/lib/tenma_postgres.plugin';
 if (preg_match('/^\d+\.\d+\.\d+$/', $version)) {
     installPlugin($plugin, "tenma-postgres-$platform", $version);
 } elseif (!is_file($plugin)) {
     fail("tenma/postgres $version is no release. Build the plugin: cd plugin && cargo build --release, "
-        . "then copy target/release/libtenma_postgres.* to $plugin");
+        . "then copy target/release/libtenma_postgres.so or .dylib to $plugin");
 }
 
 register(getcwd() . '/tenma.json', $plugin);
@@ -183,10 +184,16 @@ function register(string $config, string $plugin): void
     $directory = realpath(dirname($config)) . '/';
     $path = str_starts_with($plugin, $directory) ? './' . substr($plugin, strlen($directory)) : $plugin;
     $plugins = is_array($settings['plugins'] ?? null) ? $settings['plugins'] : [];
-    if (in_array($path, $plugins, true)) {
+    // Up to 0.1.1 the file was named for the platform; composer update removed it
+    $plugins = array_values(array_filter(
+        $plugins,
+        fn (mixed $entry): bool => !is_string($entry) || !preg_match('#/lib/libtenma_postgres\.(so|dylib)$#', $entry),
+    ));
+    $kept = in_array($path, $plugins, true) ? $plugins : [...$plugins, $path];
+    if ($kept === ($settings['plugins'] ?? null)) {
         return;
     }
-    $settings['plugins'] = [...$plugins, $path];
+    $settings['plugins'] = $kept;
 
     file_put_contents($config, json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
     echo "Added $path to $config\n";
