@@ -4,6 +4,10 @@
 //! The server listens on 127.0.0.1 only, on a free port, with a password made at the first start.
 //! Unix sockets stay off: their path may have at most 103 bytes, and the data directory of an app can
 //! be deeper than that.
+//!
+//! The process that starts the server owns it and stops it at its end; its PID is in `tenma-owner`. A
+//! second process on the same directory while the owner lives (a command-line task next to the dev
+//! server) only borrows the server and leaves it running.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -34,11 +38,15 @@ const USER: &str = "tenma";
 const DATABASE: &str = "postgres";
 /// Next to the cluster's own files, readable only by the owner like the rest of the directory.
 const PASSWORD_FILE: &str = "tenma-password";
+/// The PID of the process that stops the server when it ends.
+const OWNER_FILE: &str = "tenma-owner";
 
 struct Running {
     binaries: PathBuf,
     data: PathBuf,
     server: Server,
+    /// Another living process started the server: this one leaves it running at its end
+    borrowed: bool,
 }
 
 #[derive(Deserialize)]
@@ -123,10 +131,22 @@ fn start(input: &[u8]) -> Result<String, String> {
     let password = fs::read_to_string(data.join(PASSWORD_FILE))
         .map_err(|error| format!("postgres: {PASSWORD_FILE}: {error}"))?;
 
-    let port = match port_in_use(&binaries, &data) {
-        Some(port) => port,
-        None => launch(&binaries, &data)?,
+    let (port, borrowed) = match port_in_use(&binaries, &data) {
+        Some(port) => match living_owner(&data) {
+            Some(owner) => {
+                let message = format!("postgres: using the server of process {owner} on port {port}");
+                api().log(LOG_INFO, &format!("{message}, it keeps running after this one"));
+                (port, true)
+            }
+            // Left by a process that is gone (a restart in watch mode, a crash): this one takes it over
+            None => (port, false),
+        },
+        None => (launch(&binaries, &data)?, false),
     };
+    if !borrowed {
+        fs::write(data.join(OWNER_FILE), std::process::id().to_string())
+            .map_err(|error| format!("postgres: {OWNER_FILE}: {error}"))?;
+    }
     let server = Server {
         host: "127.0.0.1",
         port,
@@ -135,7 +155,7 @@ fn start(input: &[u8]) -> Result<String, String> {
         database: DATABASE,
     };
     let json = to_json(&server)?;
-    *running = Some(Running { binaries, data, server });
+    *running = Some(Running { binaries, data, server, borrowed });
     Ok(json)
 }
 
@@ -209,12 +229,29 @@ fn port_in_use(binaries: &Path, data: &Path) -> Option<u16> {
     pid.lines().nth(3)?.trim().parse().ok()
 }
 
-/// Stops the server when tenma ends; the running queries get cancelled (`fast`), the data is safe.
+/// The owner of a running server when it is another process that still lives.
+fn living_owner(data: &Path) -> Option<u32> {
+    let owner: u32 = fs::read_to_string(data.join(OWNER_FILE)).ok()?.trim().parse().ok()?;
+    if owner == std::process::id() {
+        return None;
+    }
+    // Signal 0 only asks whether the process exists; EPERM means it does, under another user
+    let alive = unsafe { libc::kill(owner as libc::pid_t, 0) } == 0
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    alive.then_some(owner)
+}
+
+/// Stops the server when tenma ends, unless another process owns it; the running queries get
+/// cancelled (`fast`), the data is safe.
+// ponytail: the owner stops the server even while a borrower still uses it; count borrowers if that bites
 extern "C" fn shutdown() {
     let running = SERVER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(running) = running.as_ref() else {
         return;
     };
+    if running.borrowed {
+        return;
+    }
     let stopped = run(Command::new(running.binaries.join("bin/pg_ctl"))
         .arg("--pgdata")
         .arg(&running.data)

@@ -63,6 +63,29 @@ final class ServerTest extends TestCase
         self::assertSame('2', $sum);
     }
 
+    public function testLeavesTheServerOfALivingProcessRunning(): void
+    {
+        [$port] = $this->query();
+        $socket = stream_socket_server('tcp://127.0.0.1:0');
+        self::assertNotFalse($socket);
+        $port = (string) parse_url('tcp://' . stream_socket_get_name($socket, false), PHP_URL_PORT);
+        fclose($socket);
+        $options = escapeshellarg("-p $port -c listen_addresses=127.0.0.1 -c unix_socket_directories=''");
+        $log = escapeshellarg($this->data . '/server.log');
+        exec($this->pgCtl("--options $options --log $log --wait start"), $output, $status);
+        self::assertSame(0, $status, implode("\n", $output));
+        // As a dev server that owns it while a command-line task runs next to it: this test's process lives
+        file_put_contents($this->data . '/tenma-owner', (string) getmypid());
+
+        [$found, $sum] = $this->query();
+
+        self::assertSame($port, $found);
+        self::assertSame('2', $sum);
+        exec($this->pgCtl('status'), result_code: $status);
+        self::assertSame(0, $status, 'pg_ctl status: the borrower stopped the server');
+        self::assertSame((string) getmypid(), file_get_contents($this->data . '/tenma-owner'));
+    }
+
     /** @return list<string> the port and the answer */
     private function query(): array
     {

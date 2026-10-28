@@ -16,7 +16,9 @@ $pdo = new PDO($server->dsn());
 - The server listens on 127.0.0.1 only, on a free port. Unix sockets stay off.
 - It runs once per process: every worker gets the same server. A server that an earlier process left running on
   the same directory (a restart in watch mode, a crash) is found and used.
-- It stops when tenma ends: after Ctrl+C or SIGTERM, and when a script that serves nothing finishes.
+- It stops when tenma ends: after Ctrl+C or SIGTERM, and when a script that serves nothing finishes. Only the
+  process that owns it stops it (its PID is in `data/tenma-owner`): a second tenma on the same directory while
+  the owner runs, such as a command-line task next to the dev server, borrows the server and leaves it running.
 - `$server->url()` gives `postgresql://tenma:...@127.0.0.1:PORT/postgres`, the form of `DATABASE_URL`.
 
 ## Optional by design
